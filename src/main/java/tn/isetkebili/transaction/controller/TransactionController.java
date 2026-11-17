@@ -5,6 +5,9 @@ import tn.isetkebili.transaction.entity.Transaction;
 import tn.isetkebili.transaction.service.TransactionService;
 import java.util.List;
 import tn.isetkebili.transaction.dto.TransferRequest;
+import org.springframework.web.bind.annotation.CrossOrigin;
+
+@CrossOrigin(origins = "http://localhost:5173")
 @RestController
 @RequestMapping("/api/transactions")
 public class TransactionController {
