@@ -1,6 +1,5 @@
 package tn.isetkebili.transaction.service;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import tn.isetkebili.transaction.dto.TransferRequest;
@@ -10,23 +9,19 @@ import tn.isetkebili.transaction.repository.TransactionRepository;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Map;
 
 @Service
 public class TransactionService {
 
     private final TransactionRepository repository;
     private final RestClient accountRestClient;
-    private final RestClient notificationRestClient; // Nouveau client
 
-    public TransactionService(TransactionRepository repository,
-                              RestClient accountRestClient,
-                              @Value("${services.notification.url:http://notification-service:8084}") String notificationUrl) {
+    public TransactionService(TransactionRepository repository, RestClient accountRestClient) {
         this.repository = repository;
         this.accountRestClient = accountRestClient;
-        this.notificationRestClient = RestClient.builder().baseUrl(notificationUrl).build();
     }
 
+    // 1. Le client demande un virement (on ne touche pas à l'argent tout de suite)
     public Transaction transfer(TransferRequest request) {
         if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("Le montant doit être positif");
@@ -36,45 +31,36 @@ public class TransactionService {
         tx.setSourceAccountId(request.getSourceAccountId());
         tx.setDestinationAccountId(request.getDestinationAccountId());
         tx.setAmount(request.getAmount());
-        tx.setStatus(TransactionStatus.PENDING);
-        repository.save(tx);
+        tx.setStatus(TransactionStatus.PENDING); // On met PENDING !
+        return repository.save(tx);
+    }
+
+    // 2. L'admin approuve le virement (c'est ici que l'argent bouge)
+    public Transaction approveTransaction(Long id) {
+        Transaction tx = repository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Transaction introuvable"));
+
+        if (tx.getStatus() != TransactionStatus.PENDING) {
+            throw new IllegalStateException("Cette transaction n'est pas en attente");
+        }
 
         try {
-            // Débit
+            // Appel au Account Service pour débiter
             accountRestClient.post()
-                    .uri("/api/accounts/{id}/debit", request.getSourceAccountId())
-                    .body(request.getAmount())
+                    .uri("/api/accounts/{id}/debit", tx.getSourceAccountId())
+                    .body(tx.getAmount())
                     .retrieve()
                     .toBodilessEntity();
 
-            // Crédit
+            // Appel au Account Service pour créditer
             accountRestClient.post()
-                    .uri("/api/accounts/{id}/credit", request.getDestinationAccountId())
-                    .body(request.getAmount())
+                    .uri("/api/accounts/{id}/credit", tx.getDestinationAccountId())
+                    .body(tx.getAmount())
                     .retrieve()
                     .toBodilessEntity();
 
             tx.setStatus(TransactionStatus.COMPLETED);
-            Transaction savedTx = repository.save(tx);
-
-            // ⚠️ NOUVEAU : Appel au Notification Service
-            try {
-                Map<String, Object> notification = Map.of(
-                        "customerId", 1, // On pourrait récupérer le vrai customerId
-                        "message", "Virement de " + request.getAmount() + " TND effectué avec succès.",
-                        "type", "TRANSFER_COMPLETED"
-                );
-                notificationRestClient.post()
-                        .uri("/api/notifications")
-                        .body(notification)
-                        .retrieve()
-                        .toBodilessEntity();
-            } catch (Exception e) {
-                // Si la notification échoue, on ne bloque pas le virement
-                System.err.println("Erreur d'envoi de notification : " + e.getMessage());
-            }
-
-            return savedTx;
+            return repository.save(tx);
 
         } catch (Exception e) {
             tx.setStatus(TransactionStatus.FAILED);
@@ -83,5 +69,7 @@ public class TransactionService {
         }
     }
 
-    public List<Transaction> findAll() { return repository.findAll(); }
+    public List<Transaction> findAll() {
+        return repository.findAll();
+    }
 }
